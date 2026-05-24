@@ -1,0 +1,219 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  apiKeys  ApiKey[]
+  courses  Course[]
+  learners Learner[]
+  attempts Attempt[]
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  name       String
+  hashedKey  String    @unique
+  prefix     String
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+enum ScormVersion {
+  SCORM_12
+  SCORM_2004_2
+  SCORM_2004_3
+  SCORM_2004_4
+}
+
+model Course {
+  id           String       @id @default(cuid())
+  tenantId     String
+  title        String
+  description  String?
+  scormVersion ScormVersion
+  storageKey   String
+  launchUrl    String
+  masteryScore Float?
+  manifest     Json
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  scos     Sco[]
+  attempts Attempt[]
+
+  @@index([tenantId])
+}
+
+model Sco {
+  id         String  @id @default(cuid())
+  courseId   String
+  identifier String
+  title      String
+  launchHref String
+  parameters String?
+  order      Int
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  attempts Attempt[]
+
+  @@unique([courseId, identifier])
+  @@index([courseId])
+}
+
+model Learner {
+  id         String   @id @default(cuid())
+  tenantId   String
+  externalId String
+  name       String?
+  createdAt  DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  attempts Attempt[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId])
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  COMPLETED
+  TERMINATED
+  EXPIRED
+}
+
+enum LessonStatus {
+  PASSED
+  COMPLETED
+  FAILED
+  INCOMPLETE
+  BROWSED
+  NOT_ATTEMPTED
+}
+
+enum CompletionStatus {
+  COMPLETED
+  INCOMPLETE
+  NOT_ATTEMPTED
+  UNKNOWN
+}
+
+enum SuccessStatus {
+  PASSED
+  FAILED
+  UNKNOWN
+}
+
+model Attempt {
+  id        String  @id @default(cuid())
+  tenantId  String
+  courseId  String
+  learnerId String
+  scoId     String?
+
+  status AttemptStatus @default(IN_PROGRESS)
+
+  lessonStatus     LessonStatus     @default(NOT_ATTEMPTED)
+  completionStatus CompletionStatus @default(NOT_ATTEMPTED)
+  successStatus    SuccessStatus    @default(UNKNOWN)
+
+  lessonLocation String?
+  suspendData    String?
+
+  scoreRaw    Float?
+  scoreMin    Float?
+  scoreMax    Float?
+  scoreScaled Float?
+
+  sessionTimeSeconds Int @default(0)
+  totalTimeSeconds   Int @default(0)
+
+  progressMeasure Float?
+
+  cmiSnapshot Json @default("{}")
+
+  startedAt    DateTime  @default(now())
+  lastCommitAt DateTime?
+  finishedAt   DateTime?
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course       Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  learner      Learner       @relation(fields: [learnerId], references: [id], onDelete: Cascade)
+  sco          Sco?          @relation(fields: [scoId], references: [id], onDelete: SetNull)
+  interactions Interaction[]
+  objectives   Objective[]
+  commits      CommitLog[]
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@index([learnerId])
+  @@index([tenantId, courseId, learnerId])
+}
+
+model Interaction {
+  id              String   @id @default(cuid())
+  attemptId       String
+  index           Int
+  identifier      String
+  type            String?
+  learnerResponse String?
+  correctResponse String?
+  result          String?
+  weighting       Float?
+  latencySeconds  Float?
+  description     String?
+  timestamp       DateTime @default(now())
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, index])
+  @@index([attemptId])
+}
+
+model Objective {
+  id               String            @id @default(cuid())
+  attemptId        String
+  index            Int
+  identifier       String
+  scoreRaw         Float?
+  scoreMin         Float?
+  scoreMax         Float?
+  scoreScaled      Float?
+  successStatus    SuccessStatus?
+  completionStatus CompletionStatus?
+  progressMeasure  Float?
+  description      String?
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, index])
+  @@index([attemptId])
+}
+
+model CommitLog {
+  id        String   @id @default(cuid())
+  attemptId String
+  values    Json
+  createdAt DateTime @default(now())
+
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+  @@index([createdAt])
+}
