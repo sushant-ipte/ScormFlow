@@ -1,0 +1,938 @@
+openapi: 3.1.0
+info:
+  title: SCORM Engine API
+  version: 0.1.0
+  summary: Modern SCORM runtime + tracking engine for TypeScript applications.
+  description: |
+    The SCORM Engine API is a **vendor-neutral REST contract** for SCORM 1.2 and
+    SCORM 2004 course ingestion, runtime tracking, and analytics. It is the
+    primary contract for our client SDK (`scorm-engine-client`), but the API is
+    designed to be consumed by **any HTTP client**.
+
+    The engine ships static-asset routes (`/play/:attemptId`, `/runtime.js`) that
+    bridge browser-side SCOs to the API. The runtime bridge is a **clean-room,
+    spec-compliant implementation of the SCORM JavaScript API** — it has no
+    third-party SCORM dependencies. Because it follows the spec, any SCORM-compliant
+    course works regardless of the authoring tool or API wrapper it was built with.
+
+    ## Versioning
+    The API is versioned via the URL prefix (`/api/v1`). Breaking changes ship under
+    a new prefix. Additive changes (new optional fields, new endpoints) are non-breaking.
+
+    ## Authentication
+    Two auth modes:
+    - **API key** (`X-API-Key` header): service-to-service calls from an LMS backend.
+    - **Attempt JWT** (`Authorization: Bearer <jwt>`): short-lived token scoped to
+      a single attempt, used by the in-browser player. Issued by `/auth/attempt-token`.
+
+    ## Tenancy
+    Every resource is scoped to a tenant resolved from the API key. Attempt JWTs
+    inherit the tenant of the API key that issued them.
+  contact:
+    name: SCORM Engine
+    url: https://github.com/scorm-engine
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local development
+  - url: https://api.example.com/api/v1
+    description: Production (placeholder)
+
+tags:
+  - name: Courses
+    description: Upload, list, and manage SCORM packages.
+  - name: Attempts
+    description: Learner sessions against a course.
+  - name: Runtime
+    description: SCORM runtime API — called by the in-browser player bridge.
+  - name: Analytics
+    description: Aggregated progress and performance data.
+  - name: Auth
+    description: Token issuance for player sessions.
+  - name: System
+    description: Health and metadata.
+  - name: Embed
+    description: |
+      Static-asset routes for embedding SCORM courses without our SDK. Enables the
+      "backend-only" use case: drop in an `<iframe>` or a `<script>` tag and any
+      spec-compliant SCO works — regardless of the authoring tool or API wrapper
+      it was built with.
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  # ─────────────────────────────────────────────────────────────────────────
+  # System
+  # ─────────────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Engine is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  version: { type: string }
+
+  /ready:
+    get:
+      tags: [System]
+      summary: Readiness probe (DB + storage reachable)
+      security: []
+      responses:
+        '200': { description: Ready }
+        '503': { description: Not ready }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Embed (SDK-less integration)
+  # ─────────────────────────────────────────────────────────────────────────
+  /play/{attemptId}:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      tags: [Embed]
+      summary: Self-contained iframe player page
+      description: |
+        Returns an HTML page that loads the SCO, injects the SCORM runtime API
+        (`window.API` / `window.API_1484_11`), and persists progress to this engine.
+        Host with a single `<iframe>` — no SDK or framework required.
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: Attempt JWT (issued by `/auth/attempt-token`).
+        - name: theme
+          in: query
+          schema: { type: string, enum: [light, dark, auto], default: auto }
+        - name: scoId
+          in: query
+          schema: { type: string }
+          description: Optional — override the default SCO.
+      responses:
+        '200':
+          description: HTML player page
+          content:
+            text/html:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /runtime.js:
+    get:
+      tags: [Embed]
+      summary: Standalone SCORM runtime bridge script
+      description: |
+        Returns a small JS file that, when included via `<script>`, exposes
+        `window.API` (SCORM 1.2) and `window.API_1484_11` (SCORM 2004) wired to
+        this engine. A clean-room, spec-compliant implementation — no third-party
+        SCORM libraries are bundled or required. The SCO inside an `<iframe>`
+        finds the globals via the normal SCORM lookup walk (parent, then opener)
+        and behaves exactly as it would against any conformant LMS.
+
+        ```html
+        <script src="https://your-engine/runtime.js?attemptId=...&token=..."></script>
+        <iframe src="./course/index.html"></iframe>
+        ```
+      security: []
+      parameters:
+        - name: attemptId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: Attempt JWT (issued by `/auth/attempt-token`).
+      responses:
+        '200':
+          description: JavaScript runtime bridge
+          content:
+            application/javascript:
+              schema: { type: string }
+            text/javascript:
+              schema: { type: string }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Auth
+  # ─────────────────────────────────────────────────────────────────────────
+  /auth/attempt-token:
+    post:
+      tags: [Auth]
+      summary: Issue a short-lived JWT scoped to a single attempt
+      description: |
+        Called by the LMS backend to mint a token the browser-side player can use
+        without exposing the long-lived API key. Token TTL defaults to the attempt
+        duration limit (configurable, max 24h).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attemptId]
+              properties:
+                attemptId: { type: string, format: uuid }
+                ttlSeconds: { type: integer, minimum: 60, maximum: 86400, default: 3600 }
+      responses:
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Courses
+  # ─────────────────────────────────────────────────────────────────────────
+  /courses:
+    get:
+      tags: [Courses]
+      summary: List courses
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: q
+          in: query
+          schema: { type: string }
+          description: Free-text search on course title.
+      responses:
+        '200':
+          description: Paginated course list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourseListResponse'
+
+    post:
+      tags: [Courses]
+      summary: Upload a SCORM package
+      description: |
+        Accepts a SCORM 1.2 or 2004 ZIP package. The engine extracts the package,
+        parses `imsmanifest.xml`, persists metadata, and stores the package files
+        via the configured storage adapter.
+
+        For large files prefer the two-step flow:
+        1. `POST /courses/upload-url` to get a presigned upload URL.
+        2. `POST /courses` with `{ uploadKey }` to register the uploaded package.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: SCORM package ZIP.
+                title:
+                  type: string
+                  description: Override the title parsed from the manifest.
+          application/json:
+            schema:
+              type: object
+              required: [uploadKey]
+              properties:
+                uploadKey: { type: string, description: Storage key returned by /courses/upload-url }
+                title: { type: string }
+      responses:
+        '201':
+          description: Course created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422':
+          description: Invalid SCORM package (malformed ZIP or manifest)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /courses/upload-url:
+    post:
+      tags: [Courses]
+      summary: Get a presigned URL for direct package upload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, sizeBytes]
+              properties:
+                filename: { type: string }
+                sizeBytes: { type: integer, minimum: 1 }
+                contentType: { type: string, default: application/zip }
+      responses:
+        '200':
+          description: Upload URL issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uploadUrl: { type: string, format: uri }
+                  uploadKey: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  method: { type: string, enum: [PUT, POST] }
+                  headers:
+                    type: object
+                    additionalProperties: { type: string }
+
+  /courses/{courseId}:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      summary: Get a course
+      responses:
+        '200':
+          description: Course
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Course' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Courses]
+      summary: Delete a course and all its attempts
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /courses/{courseId}/launch-url:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      summary: Get a signed launch URL for the course's primary SCO
+      description: |
+        Returns a short-lived URL pointing at the SCO entry point on the engine's
+        static asset host. The player loads this in an iframe.
+      parameters:
+        - name: scoId
+          in: query
+          schema: { type: string }
+          description: Optional — defaults to the manifest's primary SCO.
+      responses:
+        '200':
+          description: Launch URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  launchUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+
+  /courses/validate:
+    post:
+      tags: [Courses]
+      summary: Validate a SCORM package without registering it
+      description: Useful for CI / authoring pipelines. No course is persisted.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Validation report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationReport'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Attempts
+  # ─────────────────────────────────────────────────────────────────────────
+  /attempts:
+    post:
+      tags: [Attempts]
+      summary: Start a new attempt
+      description: |
+        Creates a new attempt for a learner against a course. If a non-completed
+        attempt already exists and `resume=true`, returns that attempt instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courseId, learnerId]
+              properties:
+                courseId: { type: string, format: uuid }
+                learnerId:
+                  type: string
+                  description: |
+                    Opaque identifier from the host LMS. The engine never stores PII —
+                    this is the only learner identifier it knows.
+                learnerName:
+                  type: string
+                  description: Optional display name passed to the SCO as `cmi.core.student_name`.
+                resume:
+                  type: boolean
+                  default: true
+                  description: If true, return the latest in-progress attempt instead of creating a new one.
+      responses:
+        '201':
+          description: Attempt created (or resumed)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attempt' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attempts/{attemptId}:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      tags: [Attempts]
+      summary: Get an attempt
+      responses:
+        '200':
+          description: Attempt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attempt' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attempts/{attemptId}/finish:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Attempts]
+      summary: Force-finalize an attempt
+      description: |
+        Normally an attempt is terminated by the SCO via `/runtime/{attemptId}/terminate`.
+        This endpoint exists for LMS-driven workflows (e.g. timeout, admin intervention).
+      responses:
+        '200':
+          description: Attempt finalized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attempt' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Runtime
+  # ─────────────────────────────────────────────────────────────────────────
+  # Design note: a SCORM SCO can issue dozens of SetValue calls per minute.
+  # Rather than one round-trip per call, the in-browser player holds CMI state
+  # in memory and batches changes via /commit. This endpoint set reflects that.
+  /runtime/{attemptId}/initialize:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Runtime]
+      summary: Initialize a runtime session
+      description: |
+        Called by the player when the SCO invokes `LMSInitialize` / `Initialize`.
+        Returns the full CMI data model snapshot (empty for a new attempt, populated
+        for a resume).
+      security:
+        - AttemptJWT: []
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: Runtime state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeState'
+        '409':
+          description: Attempt already terminated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /runtime/{attemptId}/commit:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Runtime]
+      summary: Commit a batch of CMI value changes
+      description: |
+        Persists a batch of CMI changes. The player should call this:
+        - On `LMSCommit` / `Commit` from the SCO.
+        - On a debounced interval (e.g. every 10s) to reduce data loss risk.
+        - On `beforeunload` (with `keepalive: true`).
+
+        Keys use SCORM-version-native naming:
+        - SCORM 1.2: `cmi.core.lesson_status`, `cmi.suspend_data`, ...
+        - SCORM 2004: `cmi.completion_status`, `cmi.success_status`, ...
+
+        **Validation policy:** the engine mirrors real-world LMS behavior — invalid
+        or unknown CMI keys are silently accepted and surfaced as `warnings` in the
+        response (and in server logs) rather than rejecting the batch. This matches
+        what certified commercial LMSes do; SCORM content in the wild routinely
+        violates the spec and rejecting commits would break otherwise-functional
+        courses. Use the `warnings` array for observability, not for control flow.
+      security:
+        - AttemptJWT: []
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitRequest'
+      responses:
+        '200':
+          description: Commit accepted (possibly with warnings).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitResponse'
+
+  /runtime/{attemptId}/terminate:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Runtime]
+      summary: Terminate a runtime session
+      description: |
+        Called by the player when the SCO invokes `LMSFinish` / `Terminate`.
+        Persists any final batch of values and finalizes the attempt.
+      security:
+        - AttemptJWT: []
+        - ApiKeyAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                values:
+                  type: object
+                  additionalProperties: true
+                  description: Final batch of CMI values to persist before termination.
+      responses:
+        '200':
+          description: Attempt terminated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attempt: { $ref: '#/components/schemas/Attempt' }
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Analytics
+  # ─────────────────────────────────────────────────────────────────────────
+  /analytics/overview:
+    get:
+      tags: [Analytics]
+      summary: Tenant-wide analytics overview
+      responses:
+        '200':
+          description: Overview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsOverview' }
+
+  /analytics/courses/{courseId}:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Analytics]
+      summary: Analytics for a single course
+      responses:
+        '200':
+          description: Course analytics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseAnalytics' }
+
+  /analytics/learners/{learnerId}:
+    parameters:
+      - name: learnerId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Analytics]
+      summary: Analytics for a single learner
+      responses:
+        '200':
+          description: Learner analytics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LearnerAnalytics' }
+
+components:
+  # ───────────────────────────────────────────────────────────────────────
+  # Security
+  # ───────────────────────────────────────────────────────────────────────
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Long-lived tenant API key. Used for server-to-server calls.
+    AttemptJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Short-lived JWT scoped to a single attempt. Issued via /auth/attempt-token.
+        Used by the in-browser player.
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Reusable parameters
+  # ───────────────────────────────────────────────────────────────────────
+  parameters:
+    CourseId:
+      name: courseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AttemptId:
+      name: attemptId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+      description: Opaque pagination cursor returned by the previous page.
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Reusable responses
+  # ───────────────────────────────────────────────────────────────────────
+  responses:
+    BadRequest:
+      description: Request was malformed.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Schemas
+  # ───────────────────────────────────────────────────────────────────────
+  schemas:
+    # ── Core ─────────────────────────────────────────────────────────────
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code (e.g. `course_not_found`).
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+        requestId: { type: string }
+
+    Pagination:
+      type: object
+      properties:
+        nextCursor:
+          type: string
+          nullable: true
+        hasMore: { type: boolean }
+
+    ScormVersion:
+      type: string
+      enum: [SCORM_1_2, SCORM_2004_2, SCORM_2004_3, SCORM_2004_4]
+
+    # ── Course ───────────────────────────────────────────────────────────
+    Course:
+      type: object
+      required: [id, title, version, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        version: { $ref: '#/components/schemas/ScormVersion' }
+        status:
+          type: string
+          enum: [processing, ready, failed]
+        scos:
+          type: array
+          items: { $ref: '#/components/schemas/Sco' }
+        primaryScoId:
+          type: string
+          description: Default SCO launched when the player starts.
+        masteryScore:
+          type: number
+          nullable: true
+          description: 0-100 mastery threshold parsed from the manifest.
+        manifest:
+          $ref: '#/components/schemas/ManifestMetadata'
+        sizeBytes: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Sco:
+      type: object
+      required: [id, identifier, title, launchHref]
+      properties:
+        id: { type: string }
+        identifier:
+          type: string
+          description: Manifest `identifier` attribute.
+        title: { type: string }
+        launchHref:
+          type: string
+          description: Relative path within the package to the SCO entry point.
+        parameters: { type: string, nullable: true }
+        masteryScore: { type: number, nullable: true }
+
+    ManifestMetadata:
+      type: object
+      properties:
+        identifier: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        keywords:
+          type: array
+          items: { type: string }
+        schemaVersion: { type: string }
+        defaultOrganization: { type: string, nullable: true }
+
+    CourseListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Course' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    ValidationReport:
+      type: object
+      properties:
+        valid: { type: boolean }
+        version:
+          allOf:
+            - $ref: '#/components/schemas/ScormVersion'
+          nullable: true
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
+              path: { type: string, nullable: true }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
+
+    # ── Attempt ──────────────────────────────────────────────────────────
+    Attempt:
+      type: object
+      required: [id, courseId, learnerId, status, attemptNumber, startedAt]
+      properties:
+        id: { type: string, format: uuid }
+        courseId: { type: string, format: uuid }
+        learnerId: { type: string }
+        learnerName: { type: string, nullable: true }
+        attemptNumber:
+          type: integer
+          description: 1-indexed sequence of attempts by this learner on this course.
+        status:
+          type: string
+          enum: [not_started, in_progress, completed, passed, failed, terminated]
+        completionStatus:
+          type: string
+          enum: [unknown, completed, incomplete, not_attempted]
+          description: SCORM 2004 completion status; mapped from `cmi.completion_status`.
+        successStatus:
+          type: string
+          enum: [unknown, passed, failed]
+          description: SCORM 2004 success status; mapped from `cmi.success_status`.
+        score:
+          $ref: '#/components/schemas/Score'
+        progressMeasure:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+        totalTimeSeconds:
+          type: integer
+          description: Total accumulated session time across all sessions in this attempt.
+        location:
+          type: string
+          nullable: true
+          description: Bookmark (`cmi.core.lesson_location` / `cmi.location`).
+        startedAt: { type: string, format: date-time }
+        lastAccessedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    Score:
+      type: object
+      properties:
+        raw: { type: number, nullable: true }
+        min: { type: number, nullable: true }
+        max: { type: number, nullable: true }
+        scaled:
+          type: number
+          nullable: true
+          minimum: -1
+          maximum: 1
+          description: SCORM 2004 normalized score (-1..1).
+
+    # ── Runtime ──────────────────────────────────────────────────────────
+    RuntimeState:
+      type: object
+      required: [attemptId, version, cmi]
+      properties:
+        attemptId: { type: string, format: uuid }
+        version: { $ref: '#/components/schemas/ScormVersion' }
+        cmi:
+          type: object
+          additionalProperties: true
+          description: |
+            Full CMI data model snapshot, keyed by SCORM-native paths. Empty object
+            for a new attempt; for a resume, contains every previously-committed key.
+          example:
+            cmi.core.lesson_status: incomplete
+            cmi.core.lesson_location: page_4
+            cmi.suspend_data: '{"chapter":2,"answers":[1,3,2]}'
+            cmi.core.score.raw: 42
+        learner:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string, nullable: true }
+        entry:
+          type: string
+          enum: [ab_initio, resume, '']
+          description: SCORM `cmi.core.entry` / `cmi.entry`.
+
+    CommitRequest:
+      type: object
+      required: [values]
+      properties:
+        values:
+          type: object
+          additionalProperties: true
+          description: |
+            Object of CMI key → value pairs to persist. Keys must match the
+            SCORM version of the course (validated server-side).
+          example:
+            cmi.core.lesson_status: completed
+            cmi.core.score.raw: 87
+            cmi.suspend_data: '{"chapter":3}'
+        sessionTimeDeltaSeconds:
+          type: integer
+          minimum: 0
+          description: |
+            Additional session time to add to the attempt's running total. Sent by
+            the player rather than the SCO so the server controls the authoritative
+            elapsed time.
+
+    CommitResponse:
+      type: object
+      required: [ok, committedAt, attempt]
+      properties:
+        ok: { type: boolean }
+        committedAt: { type: string, format: date-time }
+        attempt: { $ref: '#/components/schemas/Attempt' }
+        warnings:
+          type: array
+          description: |
+            Non-fatal issues with the committed batch. Values are still persisted
+            (see endpoint description for rationale). Use for observability and
+            content-author feedback, not for retry logic.
+          items: { $ref: '#/components/schemas/CommitWarning' }
+
+    CommitWarning:
+      type: object
+      required: [code, key, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - unknown_key
+            - read_only_key
+            - invalid_value_type
+            - out_of_range
+            - invalid_format
+            - version_mismatch
+          description: Stable warning code for filtering / metrics.
+        key: { type: string }
+        value: {}
+        message: { type: string }
+
+    # ── Analytics ────────────────────────────────────────────────────────
+    AnalyticsOverview:
+      type: object
+      properties:
+        courseCount: { type: integer }
+        learnerCount: { type: integer }
+        attemptCount: { type: integer }
+        completionRate:
+          type: number
+          minimum: 0
+          maximum: 1
+        averageScore:
+          type: number
+          nullable: true
+
+    CourseAnalytics:
+      type: object
+      properties:
+        courseId: { type: string, format: uuid }
+        attemptCount: { type: integer }
+        completionCount: { type: integer }
+        completionRate: { type: number, minimum: 0, maximum: 1 }
+        averageScore: { type: number, nullable: true }
+        averageTimeSeconds: { type: integer, nullable: true }
+        passRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        recentAttempts:
+          type: array
+          items: { $ref: '#/components/schemas/Attempt' }
+
+    LearnerAnalytics:
+      type: object
+      properties:
+        learnerId: { type: string }
+        attemptCount: { type: integer }
+        completedCourseCount: { type: integer }
+        totalTimeSeconds: { type: integer }
+        recentAttempts:
+          type: array
+          items: { $ref: '#/components/schemas/Attempt' }
