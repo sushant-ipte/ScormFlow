@@ -34,12 +34,12 @@
     "openapi:lint": "redocly lint openapi/openapi.yaml"
   },
   "dependencies": {
-    "@fastify/cors": "^9.0.1",
-    "@fastify/jwt": "^8.0.1",
-    "@fastify/multipart": "^8.3.0",
-    "@fastify/sensible": "^5.6.0",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/jwt": "^10.1.0",
+    "@fastify/multipart": "^10.0.0",
+    "@fastify/sensible": "^6.0.4",
     "@prisma/client": "^5.20.0",
-    "fastify": "^4.28.1",
+    "fastify": "^5.8.5",
     "pino": "^9.4.0",
     "zod": "^3.23.8"
   },
@@ -49,6 +49,6 @@
     "supertest": "^7.0.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2",
-    "vitest": "^2.1.1"
+    "vitest": "^4.1.7"
   }
 }
