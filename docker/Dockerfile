@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---------- deps ----------
-FROM node:20-alpine AS deps
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY prisma ./prisma
@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci --include=dev && npx prisma generate
 
 # ---------- build ----------
-FROM node:20-alpine AS build
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/prisma ./prisma
@@ -18,7 +18,7 @@ COPY src ./src
 RUN npm run build
 
 # ---------- runtime ----------
-FROM node:20-alpine AS runtime
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
