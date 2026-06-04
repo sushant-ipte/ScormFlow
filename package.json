@@ -1,7 +1,7 @@
 {
   "name": "@scormflow/server",
-  "version": "0.0.0",
-  "description": "ScormFlow — modern, modular SCORM runtime engine for TypeScript.",
+  "version": "0.0.1",
+  "description": "Headless SCORM, xAPI, and cmi5 engine with built-in LRS, webhooks, and AI analytics. Embed in Node or run via Docker.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,10 +12,41 @@
       "import": "./dist/index.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scormflow/scorm-engine.git"
+  },
+  "homepage": "https://github.com/scormflow/scorm-engine#readme",
+  "bugs": {
+    "url": "https://github.com/scormflow/scorm-engine/issues"
+  },
+  "keywords": [
+    "scorm",
+    "scorm-1-2",
+    "scorm-2004",
+    "xapi",
+    "tin-can-api",
+    "cmi5",
+    "lrs",
+    "learning-record-store",
+    "elearning",
+    "lms",
+    "fastify",
+    "typescript",
+    "headless",
+    "api-first"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "files": [
     "dist",
     "prisma/schema.prisma",
-    "prisma/migrations"
+    "prisma/migrations",
+    "openapi/openapi.yaml",
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -31,7 +62,9 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "openapi:lint": "redocly lint openapi/openapi.yaml"
+    "openapi:lint": "redocly lint openapi/openapi.yaml",
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "release:dry": "npm publish --dry-run"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
