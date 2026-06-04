@@ -5,14 +5,23 @@ import multipart from '@fastify/multipart';
 import jwt from '@fastify/jwt';
 
 import type { Env } from '../config/env.js';
+import { prisma as defaultPrisma, type PrismaClient } from '../db/index.js';
+import { createStorage } from '../storage/index.js';
+import type { StorageAdapter } from '../storage/types.js';
+import { apiKeyAuth } from '../auth/api-key.js';
 import { registerRoutes } from './routes/index.js';
+import { coursesRoutes } from './routes/courses.js';
 
 export interface AppDeps {
   env: Env;
+  prisma?: PrismaClient;
+  storage?: StorageAdapter;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const { env } = deps;
+  const env = deps.env;
+  const prisma = deps.prisma ?? defaultPrisma;
+  const storage = deps.storage ?? createStorage(env);
 
   const app = Fastify({
     logger:
@@ -33,10 +42,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   await app.register(jwt, { secret: env.JWT_SECRET });
 
+  await app.register(apiKeyAuth, { prisma });
+
   app.get('/healthz', async () => ({ status: 'ok' }));
   app.get('/readyz', async () => ({ status: 'ready' }));
 
-  await app.register(registerRoutes, { prefix: '/api/v1' });
+  await app.register(
+    async (api) => {
+      await api.register(registerRoutes);
+      await api.register(coursesRoutes({ prisma, storage }), { prefix: '/courses' });
+    },
+    { prefix: '/api/v1' },
+  );
 
   return app;
 }
